@@ -1,0 +1,660 @@
+---
+title: "**HÁBITOS ALIMENTARES NA PANDEMIA**"
+subtitle: "**Questionário online sobre a pandemia de COVID-19**"
+author: "Camila Sajnin"
+institute: "Especialização em Estatística e Ciência de Dados"
+format:
+  revealjs:
+    css: custom.css
+    slide-number: true
+    incremental: false
+    transition: none
+    background-transition: none
+    width: 1280
+    height: 720
+    margin: 0.07
+    auto-stretch: false
+    title-slide-attributes:
+      data-background-image: "Capa.png"
+      data-background-size: cover
+execute:
+  echo: false
+  warning: false
+  message: false
+lang: pt
+---
+
+```{r setup}
+#| include: false
+library(openxlsx)
+library(dplyr)
+library(tidyr)
+library(forcats)
+library(ggplot2)
+library(ggstats)
+library(scales)
+library(corrplot)
+library(RColorBrewer)
+library(gtsummary)
+library(gt)
+library(fmsb)
+
+theme_gtsummary_language("pt", big.mark = ".", decimal.mark = ",")
+
+Dados <- read.xlsx("DadosNutri.xlsx")
+
+Dados <- Dados %>%
+  mutate(
+    Renda_familiar = factor(
+      Renda_familiar,
+      levels = c("até R$ 1254,00", "entre R$ 1.255 - R$ 8.640", "mais de R$ 8.640"),
+      labels = c("Até R$ 1.254", "R$ 1.255 a R$ 8.640", "Mais de R$ 8.640")
+    ),
+    Escolaridade = factor(
+      Escolaridade,
+      levels = c("Ensino Fundamental Completo", "Ensino Médio Completo",
+                 "Ensino Superior Completo", "Pós-graduação"),
+      labels = c("Fundamental", "Médio", "Superior", "Pós-graduação")
+    ),
+    Raca_cor = fct_other(Raca_cor, keep = c("Branca", "Parda", "Preta"),
+                         other_level = "Outras"),
+    Raca_cor = fct_relevel(Raca_cor, "Branca", "Parda", "Preta", "Outras"),
+    Regiao = fct_recode(Regiao, "Centro-Oeste" = "Centro-oeste"),
+    Faixa_etaria = cut(Idade, c(14, 24, 34, 44, 59, Inf),
+                       labels = c("15-24", "25-34", "35-44", "45-59", "60+")),
+    Faixa3 = cut(Idade, c(14, 24, 44, Inf),
+                 labels = c("15-24 anos", "25-44 anos", "45+ anos")),
+    Classe_IMC = cut(IMC, c(-Inf, 18.5, 25, 30, Inf), right = FALSE,
+                     labels = c("Baixo peso", "Eutrofia", "Sobrepeso", "Obesidade")),
+    Idade10 = Idade / 10,
+    IMC5 = IMC / 5,
+    y = as.numeric(Alteracao_Pandemia == "Sim")
+  )
+
+n_total <- nrow(Dados)
+pct_alt <- 100 * mean(Dados$y)
+vir <- function(x, d = 1) format(round(x, d), decimal.mark = ",", nsmall = d)
+
+grupos <- list(
+  "In natura"        = c("Frutas", "Legumes_Verduras", "Feijao_GraoBico_Lentilha"),
+  "Proteína animal"  = c("Ovos_Carnes", "Leites_Derivados"),
+  "Carboidratos"     = c("Paes_Torradas_Biscoitos", "Batata_Macarrao_Arroz"),
+  "Ultraprocessados" = c("Produtos_Industrializados", "Embutidos", "Refrigerante", "Doces"),
+  "Álcool"           = "Bebidas_Alcoolicas",
+  "Água"             = "Consumo_agua",
+  "Delivery"         = "Delivery"
+)
+
+para_num <- function(x) {
+  case_when(x == "Diminuiu" ~ -1, x == "Não alterou" ~ 0,
+            x == "Aumentou" ~ 1, TRUE ~ NA_real_)
+}
+saldo_grupo <- function(itens) {
+  num <- matrix(sapply(Dados[, itens, drop = FALSE], para_num), nrow = nrow(Dados))
+  s <- rowSums(num, na.rm = TRUE)
+  s[rowSums(!is.na(num)) == 0] <- NA
+  factor(sign(s), levels = c(-1, 0, 1), labels = c("Diminuiu", "Não alterou", "Aumentou"))
+}
+G <- as.data.frame(lapply(grupos, saldo_grupo), check.names = FALSE)
+
+saldo <- function(x) 100 * (mean(x == "Aumentou", na.rm = TRUE) -
+                              mean(x == "Diminuiu", na.rm = TRUE))
+
+Gl <- bind_cols(Dados[, c("Faixa_etaria", "Faixa3", "Classe_IMC", "Genero",
+                          "Dificuldade_Financeira", "Consulta_Nutricionista",
+                          "Renda_familiar")], G) %>%
+  pivot_longer(all_of(names(grupos)), names_to = "Grupo", values_to = "Resposta") %>%
+  mutate(Grupo = factor(Grupo, levels = names(grupos)))
+
+cores_saldo <- scale_fill_gradient2(low = "#2166ac", mid = "white", high = "#b2182b",
+                                    midpoint = 0, name = "Saldo (p.p.)")
+tema <- theme_bw() + theme(text = element_text(size = 18))
+sal_g <- function(g, f) saldo(Gl$Resposta[Gl$Grupo == g & Gl$Faixa_etaria == f])
+sal_imc <- function(g, c) saldo(Gl$Resposta[Gl$Grupo == g & Gl$Classe_IMC == c])
+
+grafico_alteracao <- function(var, titulo_x) {
+  N <- Dados %>% count(.data[[var]])
+  ggplot(Dados, aes(x = .data[[var]], fill = Alteracao_Pandemia, by = .data[[var]])) +
+    geom_bar(position = "fill") +
+    geom_text(aes(label = scales::percent(after_stat(prop), accuracy = 0.1,
+                                          decimal.mark = ",")),
+              stat = "prop", position = position_fill(.5), size = 5.5) +
+    geom_text(data = N, aes(x = .data[[var]], y = 1.05, label = paste0("n = ", n)),
+              inherit.aes = FALSE, size = 5) +
+    scale_fill_manual(values = c("Sim" = "#1f77b4", "Não" = "#e45756"),
+                      name = "Alterou a\nalimentação?") +
+    scale_y_continuous(labels = scales::percent, breaks = seq(0, 1, 0.25),
+                       limits = c(0, 1.07)) +
+    xlab(titulo_x) + ylab("Proporção relativa (%)") + tema
+}
+
+dumbbell <- function(var, rotulo) {
+  Gl %>%
+    group_by(Grupo, Valor = .data[[var]]) %>%
+    summarise(Saldo = saldo(Resposta), .groups = "drop") %>%
+    ggplot(aes(x = Saldo, y = fct_rev(Grupo), color = Valor, group = Grupo)) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    geom_line(color = "grey70", linewidth = 1.4) +
+    geom_point(size = 5) +
+    scale_color_manual(name = rotulo, values = c("Não" = "#1f77b4", "Sim" = "#e45756")) +
+    xlab("Saldo: % que aumentou − % que diminuiu (p.p.)") + ylab("") +
+    tema + theme(legend.position = "bottom")
+}
+
+tabela_perfil <- function(dados) {
+  dados %>%
+    tbl_summary(
+      type = list(any_of(c("Genero", "Isolamento", "Covid", "Dificuldade_Financeira",
+                           "Consulta_Nutricionista")) ~ "dichotomous"),
+      value = list(any_of("Genero") ~ "Feminino",
+                   any_of(c("Isolamento", "Covid", "Dificuldade_Financeira",
+                            "Consulta_Nutricionista")) ~ "Sim"),
+      statistic = list(all_categorical() ~ "{n} ({p}%)", all_continuous() ~ "{mean} ({sd})"),
+      digits = list(all_categorical() ~ c(0, 1), all_continuous() ~ 1),
+      label = list(
+        any_of("Genero") ~ "Gênero feminino", any_of("Faixa_etaria") ~ "Faixa etária",
+        any_of("Raca_cor") ~ "Raça/cor", any_of("Regiao") ~ "Região",
+        any_of("Escolaridade") ~ "Escolaridade", any_of("Renda_familiar") ~ "Renda familiar",
+        any_of("Isolamento") ~ "Fez isolamento social", any_of("Covid") ~ "Teve COVID-19",
+        any_of("Dificuldade_Financeira") ~ "Teve dificuldade financeira",
+        any_of("Consulta_Nutricionista") ~ "Já consultou nutricionista",
+        any_of("Idade") ~ "Idade (anos)", any_of("IMC") ~ "IMC (kg/m²)"
+      )
+    ) %>%
+    modify_header(label ~ "**Variável**", stat_0 ~ "**N = {N}**") %>%
+    bold_labels() %>%
+    modify_footnote(all_stat_cols() ~ "n (%); quantitativas: média (DP).") %>%
+    as_gt() %>%
+    tab_options(table.font.size = px(16), data_row.padding = px(1), table.width = pct(100))
+}
+
+tab_gt <- function(df, tam = 18) {
+  df %>% gt() %>%
+    tab_options(table.font.size = px(tam), data_row.padding = px(4),
+                table.width = pct(100), column_labels.font.weight = "bold")
+}
+```
+
+# **CONTEXTUALIZAÇÃO** {data-background-image="Capa.png" style="text-align:center"}
+
+## **ORIGEM DOS DADOS**
+
+:::: columns
+::: {.column width="58%"}
+::: box-blue
+- **Questionário online** aplicado em **2022** por alunas da pós-graduação em **Nutrição da UFF**
+- **`r format(n_total, big.mark = ".")` pessoas** responderam
+- **29 variáveis**: perfil, condições vividas na pandemia, peso/altura e **mudanças no consumo de 14 alimentos e bebidas**
+:::
+:::
+
+::: {.column width="42%"}
+::: box-purple
+**PERGUNTA CENTRAL**
+
+A pandemia de COVID-19 mudou a forma como as pessoas se alimentam? Essa mudança foi **igual para todos**?
+:::
+:::
+::::
+
+## **OBJETIVOS DA ANÁLISE**
+
+::: box-green
+**OBJETIVO GERAL**
+
+Descrever as mudanças nos hábitos alimentares durante a pandemia e identificar **quais características estão associadas** a elas, estudando antes **como as próprias variáveis se relacionam**.
+:::
+
+<br>
+
+::: box-orange
+**TRÊS PERGUNTAS**
+
+1. **Quem mudou?** Alteração na alimentação e perfil de quem mudou
+2. **O que mudou?** Quais grupos de alimentos aumentaram ou diminuíram
+3. **Para quem foi pior?** O papel da dificuldade financeira na qualidade da dieta
+:::
+
+## **VARIÁVEIS SELECIONADAS**
+
+```{r tab-variaveis}
+tibble::tribble(
+  ~Papel, ~Variáveis, ~Tipo, ~Qtde,
+  "Resposta geral", "Alteração na alimentação (Sim/Não)", "Qualitativa binária", "1",
+  "Respostas específicas", "14 itens alimentares → agrupados em 7 grupos (próximos slides)", "Qualitativa ordinal", "7",
+  "Explicativas", "Gênero, isolamento, COVID-19, dificuldade financeira, nutricionista", "Qualitativas binárias", "5",
+  "", "Raça/cor, região", "Qualitativas nominais", "2",
+  "", "Renda familiar, escolaridade", "Qualitativas ordinais", "2",
+  "", "Idade, IMC", "Quantitativas", "2"
+) %>% tab_gt(19)
+```
+
+::: box-blue
+- **Variável resposta (1):** alteração na alimentação durante a pandemia
+- **Variáveis explicativas:** 9 qualitativas e 2 quantitativas
+- **Itens alimentares:** 14 itens agrupados em 7 grupos (próximos slides)
+- **Altura** e **peso** foram desconsiderados: usei o **IMC**, que combina os dois
+- **Trabalha** foi desconsiderada: deixa de ser significativa quando se considera a idade
+:::
+
+## **PACOTES UTILIZADOS**
+
+```{r tab-pacotes}
+tibble::tribble(
+  ~Pacote, ~`Principal utilização no projeto`,
+  "openxlsx", "Leitura da base DadosNutri.xlsx",
+  "dplyr, tidyr", "Manipulação e organização dos dados",
+  "forcats", "Ordenação, agrupamento e renomeação das categorias",
+  "ggplot2, scales", "Construção dos gráficos e escalas em percentual",
+  "ggstats", "Porcentagens dentro das barras empilhadas",
+  "ggrepel", "Rótulos sem sobreposição no gráfico de linhas",
+  "corrplot", "Correlograma (correlação de Spearman)",
+  "fmsb", "Gráfico radar",
+  "RColorBrewer", "Paletas de cores",
+  "gtsummary, gt", "Tabelas automáticas e formatação das tabelas"
+) %>% tab_gt(20) %>%
+  tab_style(style = cell_text(font = "monospace", color = "#336699"),
+            locations = cells_body(columns = Pacote))
+```
+
+# **ANÁLISE EXPLORATÓRIA** {data-background-image="Capa.png" style="text-align:center"}
+
+## **REPRESENTATIVIDADE DA AMOSTRA**
+
+```{r comparacao}
+pc <- function(x, cat) 100 * mean(x == cat)
+d25 <- Dados %>% filter(Idade >= 25)
+
+comp <- bind_rows(
+  tibble(Variável = "Sexo", Categoria = c("Feminino", "Masculino"),
+         Amostra = c(pc(Dados$Genero, "Feminino"), pc(Dados$Genero, "Masculino")),
+         Brasil = c(51.5, 48.5)),
+  tibble(Variável = "Cor/raça", Categoria = c("Branca", "Parda", "Preta", "Outras"),
+         Amostra = sapply(c("Branca", "Parda", "Preta", "Outras"), \(k) pc(Dados$Raca_cor, k)),
+         Brasil = c(43.5, 45.3, 10.2, 1.2)),
+  tibble(Variável = "Região", Categoria = c("Sudeste", "Nordeste", "Sul", "Norte", "Centro-Oeste"),
+         Amostra = sapply(c("Sudeste", "Nordeste", "Sul", "Norte", "Centro-Oeste"), \(k) pc(Dados$Regiao, k)),
+         Brasil = c(41.8, 26.9, 14.7, 8.5, 8.0)),
+  tibble(Variável = "Escolaridade (25+)",
+         Categoria = c("Até fundamental", "Médio", "Superior ou mais"),
+         Amostra = c(pc(d25$Escolaridade, "Fundamental"), pc(d25$Escolaridade, "Médio"),
+                     pc(d25$Escolaridade, "Superior") + pc(d25$Escolaridade, "Pós-graduação")),
+         Brasil = c(42.6, 36.0, 21.4))
+) %>%
+  mutate(Dif = Amostra - Brasil)
+```
+
+```{r comp-grafico}
+#| fig-width: 13
+#| fig-height: 4.8
+#| out-width: "100%"
+comp %>%
+  pivot_longer(c(Amostra, Brasil), names_to = "Fonte", values_to = "Pct") %>%
+  mutate(Categoria = fct_inorder(Categoria), Variável = fct_inorder(Variável)) %>%
+  ggplot(aes(x = Categoria, y = Pct, fill = Fonte)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+  geom_text(aes(label = vir(Pct, 0)), position = position_dodge(width = 0.8),
+            vjust = -0.4, size = 4.5) +
+  scale_fill_manual(values = c("Amostra" = "#d95f02", "Brasil" = "grey60"), name = "") +
+  scale_y_continuous(limits = c(0, 100), expand = expansion(mult = c(0, 0.02))) +
+  facet_wrap(~Variável, scales = "free_x", nrow = 2) +
+  labs(x = NULL, y = "% das pessoas",
+       caption = "Brasil: IBGE, Censo 2022 (sexo, cor/raça, região) e PNAD Contínua Educação 2025 (escolaridade, 25+).") +
+  theme_bw() + theme(text = element_text(size = 16), legend.position = "bottom")
+```
+
+::: box-orange
+Faltam **homens, pessoas pretas/pardas, nordestinos e pessoas com menos escolaridade**. O **Sudeste** é a única região que bate com o Brasil.
+:::
+
+## **CARACTERIZAÇÃO DA AMOSTRA**
+
+:::: columns
+::: {.column width="50%"}
+```{r tabela1a}
+Dados %>%
+  select(Genero, Faixa_etaria, Raca_cor, Regiao) %>%
+  tabela_perfil()
+```
+:::
+
+::: {.column width="50%"}
+```{r tabela1b}
+Dados %>%
+  select(Escolaridade, Renda_familiar, Isolamento, Covid, Dificuldade_Financeira,
+         Consulta_Nutricionista, Idade, IMC) %>%
+  tabela_perfil()
+```
+:::
+::::
+
+::: box-purple
+A amostra é **jovem**: **`r vir(100 * mean(Dados$Idade <= 34))`%** têm de 15 a 34 anos (só `r vir(100 * mean(Dados$Idade >= 60))`% têm 60+).
+:::
+
+## **DISTRIBUIÇÃO DA RENDA FAMILIAR**
+
+::: panel-tabset
+### Só 3 faixas
+
+```{r renda-dist}
+#| fig-width: 11
+#| fig-height: 3.9
+#| out-width: "80%"
+#| fig-align: center
+Dados %>%
+  count(Renda_familiar) %>%
+  mutate(p = n / sum(n)) %>%
+  ggplot(aes(x = Renda_familiar, y = p, fill = Renda_familiar)) +
+  geom_col(width = 0.65) +
+  geom_text(aes(label = paste0(vir(100 * p), "%")), vjust = -0.4, size = 6.5) +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.7)) +
+  xlab("Renda familiar mensal") + ylab("Frequência relativa (%)") +
+  tema + theme(legend.position = "none")
+```
+
+### Renda × Trabalha, por idade
+
+```{r renda-trabalha}
+#| fig-width: 12
+#| fig-height: 3.9
+#| out-width: "90%"
+#| fig-align: center
+Dados %>%
+  ggplot(aes(x = Trabalha, fill = Renda_familiar, by = Trabalha)) +
+  geom_bar(position = "fill") +
+  geom_text(aes(label = scales::percent(after_stat(prop), accuracy = 0.1, decimal.mark = ",")),
+            stat = "prop", position = position_fill(.5), size = 4.5) +
+  scale_fill_brewer(palette = "Dark2", name = "Renda familiar") +
+  scale_y_continuous(labels = scales::percent) +
+  xlab("Trabalha?") + ylab("Proporção relativa (%)") +
+  facet_wrap(~Faixa3) +
+  theme_bw() + theme(text = element_text(size = 16), legend.position = "bottom")
+```
+:::
+
+::: box-orange
+A renda poderia ser dividida em **mais categorias**.
+:::
+
+## **CORRELAÇÃO ENTRE OS ALIMENTOS (SPEARMAN)**
+
+```{r correlograma}
+#| fig-width: 10.5
+#| fig-height: 5.7
+#| out-width: "90%"
+#| fig-align: center
+Escala <- as.data.frame(sapply(Dados[, unlist(grupos, use.names = FALSE)], para_num))
+colnames(Escala) <- c("Frutas", "Legumes/verduras", "Feijão", "Ovos/carnes", "Leite/derivados",
+                      "Pães/biscoitos", "Batata/arroz/macarrão", "Industrializados",
+                      "Embutidos", "Refrigerante", "Doces", "Bebidas alcoólicas", "Água", "Delivery")
+M <- cor(Escala, method = "spearman", use = "pairwise.complete.obs")
+corrplot(M, method = "circle", type = "upper", order = "hclust",
+         addCoef.col = "black", number.cex = 0.8, tl.col = "black", tl.cex = 1)
+```
+
+## **AGRUPAMENTO DOS ITENS ALIMENTARES**
+
+```{r tab-grupos}
+tibble::tribble(
+  ~Grupo, ~Itens, ~`Por quê`,
+  "In natura", "Frutas, legumes/verduras, feijão", "Spearman 0,32 a 0,64",
+  "Proteína animal", "Ovos/carnes, leite e derivados", "Spearman 0,42",
+  "Carboidratos", "Pães/biscoitos, batata/arroz/macarrão", "Spearman 0,42",
+  "Ultraprocessados", "Industrializados, embutidos, refrigerante, doces", "Spearman 0,37 a 0,57",
+  "Álcool", "Bebidas alcoólicas", "Correlação baixa com todos (≤ 0,32)",
+  "Água", "Água", "Correlação baixa com todos (≤ 0,24)",
+  "Delivery", "Delivery", "Comportamento, não alimento (≤ 0,21)"
+) %>% tab_gt(19)
+```
+
+::: box-blue
+**14 itens** viram **7 grupos**.
+:::
+
+# **RESULTADOS** {data-background-image="Capa.png" style="text-align:center"}
+
+## **ALTERAÇÃO NA ALIMENTAÇÃO DURANTE A PANDEMIA**
+
+:::: columns
+::: {.column width="55%"}
+```{r alteracao-geral}
+#| fig-width: 6
+#| fig-height: 5.4
+#| out-width: "100%"
+Dados %>%
+  count(Alteracao_Pandemia) %>%
+  mutate(p = n / sum(n), ymax = cumsum(p), ymin = lag(ymax, default = 0), meio = (ymin + ymax) / 2) %>%
+  ggplot() +
+  geom_rect(aes(xmin = 2, xmax = 3, ymin = ymin, ymax = ymax, fill = Alteracao_Pandemia),
+            color = "black") +
+  geom_text(aes(x = 4.05, y = meio, label = paste0(Alteracao_Pandemia, "\n", vir(100 * p), "%")),
+            size = 7) +
+  annotate("text", x = 0, y = 0,
+           label = paste0("Alterou a\nalimentação?\nn = ", format(n_total, big.mark = ".")), size = 5.5) +
+  coord_polar(theta = "y") +
+  xlim(0, 4.5) +
+  scale_fill_manual(values = c("Sim" = "#1f77b4", "Não" = "#e45756")) +
+  theme_void() + theme(legend.position = "none")
+```
+:::
+
+::: {.column width="45%"}
+<br><br>
+
+::: box-blue
+**`r vir(pct_alt)`%** relataram **alguma alteração** na alimentação durante a pandemia.
+:::
+
+<br>
+
+::: box-purple
+**Próxima pergunta:** a mudança foi igual em todos os grupos?
+:::
+:::
+::::
+
+## **MUDANÇAS NO CONSUMO POR GRUPO ALIMENTAR**
+
+```{r likert}
+#| fig-width: 13
+#| fig-height: 4.5
+#| out-width: "95%"
+lk <- G %>%
+  pivot_longer(everything(), names_to = "Grupo", values_to = "R") %>%
+  filter(!is.na(R)) %>% count(Grupo, R) %>%
+  group_by(Grupo) %>% mutate(p = 100 * n / sum(n)) %>% ungroup() %>% select(-n) %>%
+  pivot_wider(names_from = R, values_from = p, values_fill = 0) %>%
+  rename(Dim = Diminuiu, Nao = `Não alterou`, Aum = Aumentou) %>%
+  arrange(Aum) %>% mutate(Grupo = fct_inorder(Grupo), y = as.numeric(Grupo))
+
+ggplot(lk) +
+  geom_rect(aes(xmin = -Nao / 2 - Dim, xmax = -Nao / 2, ymin = y - .36, ymax = y + .36, fill = "Diminuiu")) +
+  geom_rect(aes(xmin = -Nao / 2, xmax = Nao / 2, ymin = y - .36, ymax = y + .36, fill = "Não alterou")) +
+  geom_rect(aes(xmin = Nao / 2, xmax = Nao / 2 + Aum, ymin = y - .36, ymax = y + .36, fill = "Aumentou")) +
+  geom_text(aes(x = -Nao / 2 - Dim, y = y, label = paste0(round(Dim), "%")), hjust = 1.2, size = 5.5) +
+  geom_text(aes(x = Nao / 2 + Aum, y = y, label = paste0(round(Aum), "%")), hjust = -0.2, size = 5.5) +
+  geom_text(aes(x = 0, y = y, label = paste0(round(Nao), "%")), size = 5) +
+  scale_fill_manual(name = "Consumo na pandemia",
+                    values = c("Diminuiu" = "#2166ac", "Não alterou" = "#e8e8e8", "Aumentou" = "#b2182b"),
+                    breaks = c("Diminuiu", "Não alterou", "Aumentou")) +
+  scale_y_continuous(breaks = lk$y, labels = lk$Grupo) +
+  scale_x_continuous(limits = c(-62, 105)) +
+  labs(x = NULL, y = NULL,
+       caption = "Porcentagem entre quem tem o hábito.") +
+  theme_minimal(base_size = 17) +
+  theme(legend.position = "bottom", legend.title = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"), axis.text.x = element_blank(),
+        panel.grid = element_blank())
+```
+
+::: box-blue
+**Delivery** disparou (72% de quem usa aumentou). Em cada grupo, foram retiradas as pessoas sem o hábito: **`r vir(100 * mean(is.na(G[["Álcool"]])), 0)`%** em Álcool, **`r vir(100 * mean(is.na(G[["Delivery"]])), 0)`%** em Delivery, **`r vir(100 * mean(is.na(G[["Ultraprocessados"]])), 0)`%** em Ultraprocessados e menos de 2% nos demais.
+:::
+
+## **DIREÇÃO DAS MUDANÇAS POR FAIXA ETÁRIA**
+
+```{r heatmap-idade}
+#| fig-width: 12
+#| fig-height: 4.1
+#| out-width: "88%"
+#| fig-align: center
+Gl %>%
+  group_by(Grupo, Faixa_etaria) %>% summarise(Saldo = saldo(Resposta), .groups = "drop") %>%
+  ggplot(aes(x = Faixa_etaria, y = fct_rev(Grupo), fill = Saldo)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(Saldo)), size = 6) +
+  cores_saldo + xlab("Faixa etária (anos)") + ylab("") +
+  labs(caption = "Saldo = % que aumentou − % que diminuiu.") +
+  tema
+```
+
+::: box-orange
+**Jovens** foram para carboidratos e ultraprocessados (+`r vir(sal_g("Ultraprocessados", "15-24"), 0)` aos 15-24); **60+** cortaram ultraprocessados (**`r vir(sal_g("Ultraprocessados", "60+"), 0)`**).
+:::
+
+## **DIFICULDADE FINANCEIRA E CONSUMO**
+
+```{r radar-dificuldade}
+#| fig-width: 8.6
+#| fig-height: 4.4
+#| out-width: "60%"
+#| fig-align: center
+Rad <- Gl %>%
+  group_by(Grupo, Dificuldade_Financeira) %>%
+  summarise(p = 100 * mean(Resposta == "Diminuiu", na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = Grupo, values_from = p) %>%
+  arrange(Dificuldade_Financeira)
+n_g <- ncol(Rad) - 1
+R <- as.data.frame(rbind(rep(60, n_g), rep(0, n_g), Rad[, -1]))
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+radarchart(R, axistype = 1, pcol = c("#1f77b4", "#e45756"),
+           pfcol = c("#1f77b466", "#e4575666"), plwd = 3, plty = 1,
+           cglcol = "grey70", cglty = 1, cglwd = 0.8, axislabcol = "grey30",
+           caxislabels = paste0(seq(0, 60, 15), "%"), calcex = 0.95, vlcex = 1.25)
+legend("topright", legend = c("Sem dificuldade", "Com dificuldade"), bty = "n",
+       pch = 20, col = c("#1f77b4", "#e45756"), cex = 1.2, pt.cex = 2)
+```
+
+::: box-orange
+Quem teve dificuldade financeira (vermelho) reduziu mais em **todos os grupos**.
+:::
+
+## **REDUÇÃO DO CONSUMO POR GRUPO ALIMENTAR**
+
+```{r pct-proteina}
+#| fig-width: 13
+#| fig-height: 4.1
+#| out-width: "98%"
+#| fig-align: center
+pct_dif <- Gl %>%
+  group_by(Grupo, Dificuldade_Financeira) %>%
+  summarise(p = mean(Resposta == "Diminuiu", na.rm = TRUE), .groups = "drop")
+ordem_pct <- pct_dif %>% pivot_wider(names_from = Dificuldade_Financeira, values_from = p) %>%
+  arrange(desc(Sim - Não)) %>% pull(Grupo) %>% as.character()
+p_sim <- 100 * pct_dif$p[pct_dif$Grupo == "Proteína animal" & pct_dif$Dificuldade_Financeira == "Sim"]
+p_nao <- 100 * pct_dif$p[pct_dif$Grupo == "Proteína animal" & pct_dif$Dificuldade_Financeira == "Não"]
+pct_dif %>%
+  mutate(Grupo = factor(Grupo, levels = ordem_pct)) %>%
+  ggplot(aes(x = Grupo, y = p, fill = Dificuldade_Financeira)) +
+  geom_col(position = position_dodge(0.8), width = 0.75) +
+  geom_text(aes(label = paste0(vir(100 * p, 0), "%")), position = position_dodge(0.8),
+            vjust = -0.4, size = 5.5) +
+  scale_fill_manual(values = c("Não" = "#1f77b4", "Sim" = "#e45756"),
+                    name = "Teve dificuldade\nfinanceira?") +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.6)) +
+  xlab("") + ylab("% que DIMINUIU") + theme_bw() + theme(text = element_text(size = 17))
+```
+
+::: box-orange
+**`r vir(p_sim, 0)`%** de quem teve dificuldade financeira reduziu proteína animal, contra **`r vir(p_nao, 0)`%** de quem não teve: cerca de **3 vezes** mais.
+:::
+
+## **ACOMPANHAMENTO NUTRICIONAL E CONSUMO**
+
+```{r slope-nutri}
+#| fig-width: 11
+#| fig-height: 4.6
+#| out-width: "82%"
+#| fig-align: center
+sl <- Gl %>%
+  filter(!is.na(Resposta)) %>%
+  group_by(Grupo, Consulta_Nutricionista) %>%
+  summarise(Saldo = saldo(Resposta), .groups = "drop") %>%
+  mutate(Lado = factor(ifelse(Consulta_Nutricionista == "Sim", "Foi à nutricionista", "Não foi"),
+                       levels = c("Foi à nutricionista", "Não foi")))
+sv <- function(g, n) sl$Saldo[sl$Grupo == g & sl$Consulta_Nutricionista == n]
+
+ggplot(sl, aes(x = Lado, y = Saldo, group = Grupo, color = Grupo)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey60") +
+  geom_line(linewidth = 1.6) +
+  geom_point(size = 4.5) +
+  ggrepel::geom_text_repel(data = filter(sl, Lado == "Foi à nutricionista"),
+                           aes(label = paste0(Grupo, "  ", round(Saldo))),
+                           direction = "y", hjust = 1, nudge_x = -0.12, size = 5.2,
+                           segment.color = NA, min.segment.length = Inf, seed = 42) +
+  ggrepel::geom_text_repel(data = filter(sl, Lado == "Não foi"),
+                           aes(label = paste0(round(Saldo), "  ", Grupo)),
+                           direction = "y", hjust = 0, nudge_x = 0.12, size = 5.2,
+                           segment.color = NA, min.segment.length = Inf, seed = 42) +
+  scale_x_discrete(expand = expansion(add = 1.3)) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = NULL, y = "% aumentou − % diminuiu") +
+  tema + theme(legend.position = "none", panel.grid.major.x = element_blank(),
+               axis.text.x = element_text(face = "bold", size = 18))
+```
+
+::: box-blue
+**Dá diferença:** quem foi à nutricionista foi mais para **in natura** (`r round(sv("In natura", "Sim"))` × `r round(sv("In natura", "Não"))`) e menos para **carboidratos** (`r round(sv("Carboidratos", "Sim"))` × `r round(sv("Carboidratos", "Não"))`) e **ultraprocessados** (`r round(sv("Ultraprocessados", "Sim"))` × `r round(sv("Ultraprocessados", "Não"))`). **Delivery** fica igual.
+:::
+
+## **RENDA FAMILIAR E USO DE DELIVERY**
+
+```{r renda-delivery}
+#| fig-width: 12
+#| fig-height: 3.9
+#| out-width: "92%"
+#| fig-align: center
+Gl %>%
+  filter(Grupo == "Delivery") %>%
+  group_by(Faixa3, Renda_familiar) %>%
+  summarise(Saldo = saldo(Resposta), .groups = "drop") %>%
+  ggplot(aes(x = Renda_familiar, y = Saldo, color = Renda_familiar)) +
+  geom_segment(aes(xend = Renda_familiar, y = 0, yend = Saldo), linewidth = 1.6, color = "grey70") +
+  geom_point(size = 8) +
+  geom_text(aes(label = round(Saldo)), vjust = -1.5, size = 5.5, color = "black") +
+  scale_x_discrete(labels = c("Baixa", "Média", "Alta")) +
+  scale_color_brewer(palette = "Dark2") +
+  scale_y_continuous(limits = c(0, 100)) +
+  facet_wrap(~Faixa3) +
+  labs(x = "Renda familiar", y = "Saldo do delivery (p.p.)",
+       caption = "Saldo = % que aumentou − % que diminuiu.\nRenda: baixa = até R$ 1.254 · média = R$ 1.255 a 8.640 · alta = mais de R$ 8.640") +
+  tema + theme(legend.position = "none")
+```
+
+::: box-green
+A partir dos **25 anos**, o aumento do delivery cresce com a renda (25-44: de 32 a 75; 45+: de 15 a 79). Entre **15 e 24 anos** não há esse padrão.
+:::
+
+# **PRINCIPAIS ACHADOS** {data-background-image="Capa.png" style="text-align:center"}
+
+## **SÍNTESE DOS RESULTADOS**
+
+::: box-blue
+**1. A mudança foi a regra.** 3 em cada 4 pessoas alteraram a alimentação.
+:::
+
+::: box-green
+**2. A idade decide a direção.** Jovens foram para carboidratos e ultraprocessados; 60+ para frutas e legumes. **Delivery** subiu em todas as idades.
+:::
+
+::: box-orange
+**3. A crise financeira piorou a dieta.** **50%** de quem teve dificuldade reduziu proteína animal (contra **17%**), e também in natura, trocando por **carboidratos**.
+:::
+
+::: box-purple
+**4. O acompanhamento nutricional faz diferença.** Quem já consultou nutricionista foi mais para alimentos in natura e menos para carboidratos e ultraprocessados.
+:::
+
+# **OBRIGADA!** {data-background-image="Capa.png" style="text-align:center"}

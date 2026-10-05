@@ -1,0 +1,7 @@
+project:
+  title: "ApresentacaoSlides"
+  output-dir: docs
+  render:
+    - index.qmd
+
+editor: visual

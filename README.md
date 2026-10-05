@@ -33,9 +33,21 @@ Amostra de conveniência: mais mulheres, pessoas brancas e com pós-graduação 
 
 R e Quarto, com os pacotes `openxlsx`, `dplyr`, `tidyr`, `forcats`, `ggplot2`, `ggstats`, `ggrepel`, `scales`, `RColorBrewer`, `corrplot`, `fmsb`, `gtsummary` e `gt`.
 
+## Código
+
+O código Quarto da apresentação está em [`codigo/index.qmd`](codigo/index.qmd). Toda a análise (leitura dos dados, tabelas e gráficos) é feita dentro dele.
+
+Para reproduzir:
+
+1. coloque o arquivo `DadosNutri.xlsx` (disponibilizado na disciplina) dentro da pasta `codigo/`;
+2. na pasta `codigo/`, rode `quarto render`.
+
+Os slides são gerados na pasta `docs/`.
+
 ## Sobre este repositório
 
-Este repositório contém apenas a versão publicada dos slides (HTML gerado pelo Quarto), servida pelo GitHub Pages.
+- Raiz: versão publicada dos slides (HTML), servida pelo GitHub Pages.
+- `codigo/`: código-fonte Quarto (`index.qmd`), configuração, estilo e imagem da capa.
 
 ## Autoria
 
